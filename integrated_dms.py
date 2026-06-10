@@ -1,7 +1,20 @@
-from ultralytics import YOLO
 import cv2
 import mediapipe as mp
 import numpy as np
+import time
+import logging
+from ultralytics import YOLO
+
+# Configure logging to file and console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("dms_events.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("DMS")
 
 # ------------------
 # YOLO
@@ -13,7 +26,24 @@ model = YOLO("best.pt")
 # ------------------
 mp_face_mesh = mp.solutions.face_mesh
 
+LEFT_EYE = [33, 160, 158, 133, 153, 144]
+UPPER_LIP = 13
+LOWER_LIP = 14
+
+closed_start = None
+
+
+def distance(p1, p2):
+    return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
+
+
 cap = cv2.VideoCapture(0)
+
+last_status = None
+last_seatbelt_detected = None
+last_face_detected = None
+
+logger.info("DMS System initialized. Starting video capture...")
 
 with mp_face_mesh.FaceMesh(
     max_num_faces=1,
@@ -25,46 +55,78 @@ with mp_face_mesh.FaceMesh(
     while True:
 
         ret, frame = cap.read()
-
+        frame = cv2.flip(frame, 1)
         if not ret:
             break
 
         status = "SAFE"
+        pose = "Forward"
+        drowsy = False
+        yawning = False
+        seatbelt_detected = False
+
+        h, w, _ = frame.shape
 
         # ------------------
         # YOLO
         # ------------------
-        results = model(frame, verbose=False)
+        results = model(frame, conf=0.15, verbose=False)
 
         phone_detected = False
+        seatbelt_detected = False
 
         for r in results:
             for box in r.boxes:
 
                 cls = int(box.cls[0])
-
                 label = model.names[cls]
+                conf = float(box.conf[0])
 
                 if label == "Dist_mob":
                     phone_detected = True
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    cv2.putText(
+                        frame,
+                        f"Phone: {conf:.2f}",
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 0, 255),
+                        2
+                    )
+                elif label == "Set_belt":
+                    seatbelt_detected = True
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(
+                        frame,
+                        f"Seatbelt: {conf:.2f}",
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
 
         # ------------------
-        # Head Pose
+        # FaceMesh
         # ------------------
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        pose = "Forward"
-
         mesh_results = face_mesh.process(rgb)
 
+        face_detected_this_frame = False
+
         if mesh_results.multi_face_landmarks:
+            face_detected_this_frame = True
 
             face_landmarks = mesh_results.multi_face_landmarks[0]
 
+            # ------------------
+            # Head Pose
+            # ------------------
             face_2d = []
             face_3d = []
-
-            h, w, _ = frame.shape
 
             for idx, lm in enumerate(face_landmarks.landmark):
 
@@ -112,11 +174,105 @@ with mp_face_mesh.FaceMesh(
             elif x_angle < -10:
                 pose = "Looking Down"
 
+            # ------------------
+            # EAR Drowsiness
+            # ------------------
+            eye_points = []
+
+            for idx in LEFT_EYE:
+
+                ex = int(face_landmarks.landmark[idx].x * w)
+                ey = int(face_landmarks.landmark[idx].y * h)
+
+                eye_points.append((ex, ey))
+
+                cv2.circle(frame, (ex, ey), 2, (0, 255, 0), -1)
+
+            vertical1 = distance(eye_points[1], eye_points[5])
+            vertical2 = distance(eye_points[2], eye_points[4])
+            horizontal = distance(eye_points[0], eye_points[3])
+
+            ear = (vertical1 + vertical2) / (2.0 * horizontal)
+
+            cv2.putText(
+                frame,
+                f"EAR: {ear:.2f}",
+                (20, 100),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
+            )
+            THRESHOLD = 0.20
+
+            if ear < THRESHOLD:
+
+                if closed_start is None:
+                    closed_start = time.time()
+
+                closed_duration = time.time() - closed_start
+
+                cv2.putText(
+                    frame,
+                    f"Closed: {closed_duration:.1f}s",
+                    (30, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2
+                    )
+
+                if closed_duration > 2:
+                   drowsy = True
+
+            else:
+                closed_start = None
+
+            # ------------------
+            # Yawn Detection
+            # ------------------
+            upper = face_landmarks.landmark[UPPER_LIP]
+            lower = face_landmarks.landmark[LOWER_LIP]
+
+            p1 = (int(upper.x * w), int(upper.y * h))
+            p2 = (int(lower.x * w), int(lower.y * h))
+
+            cv2.circle(frame, p1, 3, (0, 255, 0), -1)
+            cv2.circle(frame, p2, 3, (0, 255, 0), -1)
+
+            mar = distance(p1, p2)
+
+            cv2.putText(
+                frame,
+                f"MAR: {mar:.0f}",
+                (20, 250),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
+            )
+
+            if mar > 25:
+                yawning = True
+
+        # Log face detection state changes
+        if face_detected_this_frame != last_face_detected:
+            if face_detected_this_frame:
+                logger.info("Face detected.")
+            else:
+                logger.warning("Face lost / not detected.")
+            last_face_detected = face_detected_this_frame
+
         # ------------------
         # Decision Engine
         # ------------------
+        if drowsy:
+            status = "DROWSY"
 
-        if phone_detected:
+        elif yawning:
+            status = "FATIGUED"
+
+        elif phone_detected:
             status = "PHONE_USAGE"
 
         elif pose == "Looking Down":
@@ -125,13 +281,28 @@ with mp_face_mesh.FaceMesh(
         else:
             status = "SAFE"
 
+        # Log status change
+        if status != last_status:
+            if status == "SAFE":
+                logger.info(f"Status changed: -> {status}")
+            else:
+                logger.warning(f"Status changed: -> {status}")
+            last_status = status
+
+        # Log seatbelt status change
+        if seatbelt_detected != last_seatbelt_detected:
+            if seatbelt_detected:
+                logger.info("Seatbelt status changed: Worn")
+            else:
+                logger.warning("Seatbelt status changed: Not Detected")
+            last_seatbelt_detected = seatbelt_detected
+
         # ------------------
         # Display
         # ------------------
-
         cv2.putText(
             frame,
-            status,
+            f"STATUS: {status}",
             (20, 50),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -139,10 +310,35 @@ with mp_face_mesh.FaceMesh(
             2
         )
 
+        cv2.putText(
+            frame,
+            f"POSE: {pose}",
+            (20, 150),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 0, 0),
+            2
+        )
+
+        sb_text = "SEATBELT: Worn" if seatbelt_detected else "SEATBELT: Not Detected"
+        sb_color = (0, 255, 0) if seatbelt_detected else (0, 0, 255)
+        cv2.putText(
+            frame,
+            sb_text,
+            (20, 300),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            sb_color,
+            2
+        )
+
         cv2.imshow("DAMTS", frame)
 
         if cv2.waitKey(1) & 0xFF == 27:
+            logger.info("ESC key pressed. Exiting...")
             break
 
+logger.info("DMS System shutting down. Releasing camera and closing windows...")
 cap.release()
 cv2.destroyAllWindows()
+logger.info("DMS System shutdown complete.")

@@ -3,6 +3,8 @@ import mediapipe as mp
 import numpy as np
 import time
 import logging
+import threading
+import winsound
 from ultralytics import YOLO
 
 # Configure logging to file and console
@@ -15,6 +17,26 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("DMS")
+
+# Alarm system state
+alarm_playing = False
+
+def play_alarm_sound():
+    global alarm_playing
+    try:
+        # Frequency 2000 Hz, duration 400 ms
+        winsound.Beep(2000, 400)
+    except Exception as e:
+        logger.error(f"Failed to play beep: {e}")
+    finally:
+        alarm_playing = False
+
+def trigger_alarm():
+    global alarm_playing
+    if not alarm_playing:
+        alarm_playing = True
+        t = threading.Thread(target=play_alarm_sound, daemon=True)
+        t.start()
 
 # ------------------
 # YOLO
@@ -33,6 +55,7 @@ EYE_THRESHOLD = 0.20
 
 closed_start = None
 phone_start_time = None
+distracted_start_time = None
 
 
 def distance(p1, p2):
@@ -67,9 +90,11 @@ with mp_face_mesh.FaceMesh(
         yawning = False
         seatbelt_detected = False
         phone_usage_alert = False
+        distracted_alert = False
         ear = 0.0
         mar = 0.0
         phone_duration = 0.0
+        distracted_duration = 0.0
 
         h, w, _ = frame.shape
 
@@ -251,6 +276,18 @@ with mp_face_mesh.FaceMesh(
             last_face_detected = face_detected_this_frame
 
         # ------------------
+        # Distraction Duration Tracking
+        # ------------------
+        if pose == "Looking Down":
+            if distracted_start_time is None:
+                distracted_start_time = time.time()
+            distracted_duration = time.time() - distracted_start_time
+            if distracted_duration > 3:
+                distracted_alert = True
+        else:
+            distracted_start_time = None
+
+        # ------------------
         # Decision Engine
         # ------------------
         if drowsy:
@@ -262,7 +299,7 @@ with mp_face_mesh.FaceMesh(
         elif phone_usage_alert:
             status = "PHONE_USAGE"
 
-        elif pose == "Looking Down":
+        elif distracted_alert:
             status = "DISTRACTED"
 
         else:
@@ -275,6 +312,10 @@ with mp_face_mesh.FaceMesh(
             else:
                 logger.warning(f"Status changed: -> {status}")
             last_status = status
+
+        # Trigger audio alarm for critical states (DROWSY, PHONE_USAGE, DISTRACTED)
+        if status in ["DROWSY", "PHONE_USAGE", "DISTRACTED"]:
+            trigger_alarm()
 
         # Log seatbelt status change
         if seatbelt_detected != last_seatbelt_detected:
@@ -336,18 +377,32 @@ with mp_face_mesh.FaceMesh(
             2
         )
 
-        # Draw eyes closed duration alert if closed
+        # Draw eyes closed and distracted duration alerts
+        current_y = y_offset + 40
         if ear < EYE_THRESHOLD and closed_start is not None:
             closed_dur = time.time() - closed_start
             cv2.putText(
                 frame,
                 f"Closed: {closed_dur:.1f}s",
-                (20, y_offset + 40),
+                (20, current_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (0, 255, 255),
                 2
             )
+            current_y += 30
+
+        if pose == "Looking Down" and distracted_start_time is not None:
+            cv2.putText(
+                frame,
+                f"Distracted: {distracted_duration:.1f}s",
+                (20, current_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2
+            )
+            current_y += 30
 
         cv2.imshow("DAMTS", frame)
 

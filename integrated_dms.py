@@ -56,6 +56,8 @@ EYE_THRESHOLD = 0.20
 closed_start = None
 phone_start_time = None
 distracted_start_time = None
+driver_score = 100
+safe_start_time = None
 
 
 def distance(p1, p2):
@@ -305,13 +307,38 @@ with mp_face_mesh.FaceMesh(
         else:
             status = "SAFE"
 
-        # Log status change
+        # Log status change and update driver score
         if status != last_status:
             if status == "SAFE":
                 logger.info(f"Status changed: -> {status}")
             else:
                 logger.warning(f"Status changed: -> {status}")
+                # Deduct penalty once on transition
+                if status == "DROWSY":
+                    driver_score = max(0, driver_score - 30)
+                    logger.info(f"Penalty applied: DROWSY (-30). Score: {driver_score}")
+                elif status == "PHONE_USAGE":
+                    driver_score = max(0, driver_score - 20)
+                    logger.info(f"Penalty applied: PHONE_USAGE (-20). Score: {driver_score}")
+                elif status == "DISTRACTED":
+                    driver_score = max(0, driver_score - 15)
+                    logger.info(f"Penalty applied: DISTRACTED (-15). Score: {driver_score}")
+                elif status == "FATIGUED":
+                    driver_score = max(0, driver_score - 10)
+                    logger.info(f"Penalty applied: FATIGUED (-10). Score: {driver_score}")
             last_status = status
+
+        # Recovery logic: if status is SAFE, slowly recover score (+1 point every 5 seconds)
+        if status == "SAFE":
+            if safe_start_time is None:
+                safe_start_time = time.time()
+            elif time.time() - safe_start_time >= 5.0:
+                if driver_score < 100:
+                    driver_score = min(100, driver_score + 1)
+                    logger.info(f"Score recovered: +1. Score: {driver_score}")
+                safe_start_time = time.time()
+        else:
+            safe_start_time = None
 
         # Trigger audio alarm for critical states (DROWSY, PHONE_USAGE, DISTRACTED)
         if status in ["DROWSY", "PHONE_USAGE", "DISTRACTED"]:
@@ -348,6 +375,7 @@ with mp_face_mesh.FaceMesh(
             f"MAR    : {mar:.0f}",
             f"POSE   : {pose}",
             f"PHONE  : {phone_str}",
+            f"SCORE  : {driver_score}",
             "==================="
         ]
 

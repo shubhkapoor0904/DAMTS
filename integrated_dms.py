@@ -31,6 +31,7 @@ UPPER_LIP = 13
 LOWER_LIP = 14
 
 closed_start = None
+phone_start_time = None
 
 
 def distance(p1, p2):
@@ -64,6 +65,7 @@ with mp_face_mesh.FaceMesh(
         drowsy = False
         yawning = False
         seatbelt_detected = False
+        phone_usage_alert = False
 
         h, w, _ = frame.shape
 
@@ -108,6 +110,27 @@ with mp_face_mesh.FaceMesh(
                         (0, 255, 0),
                         2
                     )
+
+        # ------------------
+        # Phone Detection Duration Tracking
+        # ------------------
+        if phone_detected:
+            if phone_start_time is None:
+                phone_start_time = time.time()
+            phone_duration = time.time() - phone_start_time
+            cv2.putText(
+                frame,
+                f"Phone: {phone_duration:.1f}s",
+                (20, 350),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),
+                2
+            )
+            if phone_duration > 2:
+                phone_usage_alert = True
+        else:
+            phone_start_time = None
 
         # ------------------
         # FaceMesh
@@ -272,7 +295,7 @@ with mp_face_mesh.FaceMesh(
         elif yawning:
             status = "FATIGUED"
 
-        elif phone_detected:
+        elif phone_usage_alert:
             status = "PHONE_USAGE"
 
         elif pose == "Looking Down":

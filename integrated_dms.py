@@ -29,6 +29,7 @@ mp_face_mesh = mp.solutions.face_mesh
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 UPPER_LIP = 13
 LOWER_LIP = 14
+EYE_THRESHOLD = 0.20
 
 closed_start = None
 phone_start_time = None
@@ -66,6 +67,9 @@ with mp_face_mesh.FaceMesh(
         yawning = False
         seatbelt_detected = False
         phone_usage_alert = False
+        ear = 0.0
+        mar = 0.0
+        phone_duration = 0.0
 
         h, w, _ = frame.shape
 
@@ -118,15 +122,6 @@ with mp_face_mesh.FaceMesh(
             if phone_start_time is None:
                 phone_start_time = time.time()
             phone_duration = time.time() - phone_start_time
-            cv2.putText(
-                frame,
-                f"Phone: {phone_duration:.1f}s",
-                (20, 350),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 0, 255),
-                2
-            )
             if phone_duration > 2:
                 phone_usage_alert = True
         else:
@@ -217,33 +212,12 @@ with mp_face_mesh.FaceMesh(
 
             ear = (vertical1 + vertical2) / (2.0 * horizontal)
 
-            cv2.putText(
-                frame,
-                f"EAR: {ear:.2f}",
-                (20, 100),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-            THRESHOLD = 0.20
-
-            if ear < THRESHOLD:
+            if ear < EYE_THRESHOLD:
 
                 if closed_start is None:
                     closed_start = time.time()
 
                 closed_duration = time.time() - closed_start
-
-                cv2.putText(
-                    frame,
-                    f"Closed: {closed_duration:.1f}s",
-                    (30, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
-                    2
-                    )
 
                 if closed_duration > 2:
                    drowsy = True
@@ -264,16 +238,6 @@ with mp_face_mesh.FaceMesh(
             cv2.circle(frame, p2, 3, (0, 255, 0), -1)
 
             mar = distance(p1, p2)
-
-            cv2.putText(
-                frame,
-                f"MAR: {mar:.0f}",
-                (20, 250),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
 
             if mar > 25:
                 yawning = True
@@ -321,39 +285,69 @@ with mp_face_mesh.FaceMesh(
             last_seatbelt_detected = seatbelt_detected
 
         # ------------------
-        # Display
+        # Display (Dashboard Overlay)
         # ------------------
-        cv2.putText(
-            frame,
-            f"STATUS: {status}",
-            (20, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 0, 255),
-            2
-        )
+        if phone_detected:
+            phone_str = f"Yes ({phone_duration:.1f}s)"
+        else:
+            phone_str = "No"
 
-        cv2.putText(
-            frame,
-            f"POSE: {pose}",
-            (20, 150),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 0, 0),
-            2
-        )
+        # Determine dashboard color based on status
+        if status in ["DROWSY", "PHONE_USAGE"]:
+            dash_color = (0, 0, 255)  # Red
+        elif status in ["FATIGUED", "DISTRACTED"]:
+            dash_color = (0, 255, 255)  # Yellow/Orange
+        else:
+            dash_color = (0, 255, 0)  # Green
 
+        dashboard_lines = [
+            "===================",
+            f"STATUS : {status}",
+            f"EAR    : {ear:.2f}",
+            f"MAR    : {mar:.0f}",
+            f"POSE   : {pose}",
+            f"PHONE  : {phone_str}",
+            "==================="
+        ]
+
+        y_offset = 40
+        for line in dashboard_lines:
+            cv2.putText(
+                frame,
+                line,
+                (20, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                dash_color,
+                2
+            )
+            y_offset += 30
+
+        # Draw seatbelt status just below the dashboard
         sb_text = "SEATBELT: Worn" if seatbelt_detected else "SEATBELT: Not Detected"
         sb_color = (0, 255, 0) if seatbelt_detected else (0, 0, 255)
         cv2.putText(
             frame,
             sb_text,
-            (20, 300),
+            (20, y_offset + 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             sb_color,
             2
         )
+
+        # Draw eyes closed duration alert if closed
+        if ear < EYE_THRESHOLD and closed_start is not None:
+            closed_dur = time.time() - closed_start
+            cv2.putText(
+                frame,
+                f"Closed: {closed_dur:.1f}s",
+                (20, y_offset + 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2
+            )
 
         cv2.imshow("DAMTS", frame)
 

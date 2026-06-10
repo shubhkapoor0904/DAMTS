@@ -69,6 +69,7 @@ cap = cv2.VideoCapture(0)
 last_status = None
 last_seatbelt_detected = None
 last_face_detected = None
+out = None
 
 logger.info("DMS System initialized. Starting video capture...")
 
@@ -85,6 +86,16 @@ with mp_face_mesh.FaceMesh(
         frame = cv2.flip(frame, 1)
         if not ret:
             break
+
+        h, w, _ = frame.shape
+
+        if out is None:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0 or fps > 100:
+                fps = 20.0
+            out = cv2.VideoWriter('demo.mp4', fourcc, fps, (w, h))
+            logger.info(f"Video recorder initialized (demo.mp4). Output resolution: {w}x{h} @ {fps} FPS")
 
         status = "SAFE"
         pose = "Forward"
@@ -434,11 +445,17 @@ with mp_face_mesh.FaceMesh(
 
         cv2.imshow("DAMTS", frame)
 
+        if out is not None:
+            out.write(frame)
+
         if cv2.waitKey(1) & 0xFF == 27:
             logger.info("ESC key pressed. Exiting...")
             break
 
 logger.info("DMS System shutting down. Releasing camera and closing windows...")
 cap.release()
+if out is not None:
+    out.release()
+    logger.info("Video recording saved to demo.mp4")
 cv2.destroyAllWindows()
 logger.info("DMS System shutdown complete.")

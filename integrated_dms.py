@@ -4,8 +4,14 @@ import numpy as np
 import time
 import logging
 import threading
-import winsound
+import sys
+import os
+import subprocess
 from ultralytics import YOLO
+
+# Conditionally import winsound on Windows to prevent startup crash on Linux/macOS
+if sys.platform == "win32":
+    import winsound
 
 # Configure logging to file and console
 logging.basicConfig(
@@ -24,10 +30,64 @@ alarm_playing = False
 def play_alarm_sound():
     global alarm_playing
     try:
-        # Frequency 2000 Hz, duration 400 ms
-        winsound.Beep(2000, 400)
+        if sys.platform == "win32":
+            # Frequency 2000 Hz, duration 400 ms
+            winsound.Beep(2000, 400)
+        elif sys.platform == "darwin":
+            # macOS system beep
+            subprocess.run(["osascript", "-e", "beep"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # Linux and other Unix-like systems
+            sound_played = False
+            
+            # Common system alert sound paths on Linux
+            common_sounds = [
+                "/usr/share/sounds/freedesktop/stereo/bell.oga",
+                "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
+                "/usr/share/sounds/freedesktop/stereo/complete.oga",
+                "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga",
+                "/usr/share/sounds/freedesktop/stereo/dialog-error.oga"
+            ]
+            
+            # Find the first existing sound file
+            sound_file = next((path for path in common_sounds if os.path.exists(path)), None)
+            
+            if sound_file:
+                # Try playing with paplay (PulseAudio), pw-play (PipeWire), or aplay (ALSA)
+                for player in ["paplay", "pw-play", "aplay"]:
+                    try:
+                        res = subprocess.run([player, sound_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if res.returncode == 0:
+                            sound_played = True
+                            break
+                    except Exception:
+                        continue
+            
+            # Fallback 1: Try running standard 'beep' command
+            if not sound_played:
+                try:
+                    res = subprocess.run(["beep", "-f", "2000", "-d", "400"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode == 0:
+                        sound_played = True
+                except Exception:
+                    pass
+
+            # Fallback 2: Try text-to-speech 'spd-say'
+            if not sound_played:
+                try:
+                    res = subprocess.run(["spd-say", "-r", "50", "warning"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode == 0:
+                        sound_played = True
+                except Exception:
+                    pass
+            
+            # Fallback 3: Send ASCII Bell character to stdout
+            if not sound_played:
+                sys.stdout.write('\a')
+                sys.stdout.flush()
+                
     except Exception as e:
-        logger.error(f"Failed to play beep: {e}")
+        logger.error(f"Failed to play alert sound: {e}")
     finally:
         alarm_playing = False
 

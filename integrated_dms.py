@@ -7,6 +7,7 @@ import threading
 import sys
 import os
 import subprocess
+import csv
 from ultralytics import YOLO
 
 # Conditionally import winsound on Windows to prevent startup crash on Linux/macOS
@@ -23,6 +24,15 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("DMS")
+
+# Initialize phone telemetry CSV file
+telemetry_file = "phone_confidence_telemetry.csv"
+try:
+    with open(telemetry_file, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp", "confidence", "box_width", "box_height", "is_confirmed"])
+except Exception as e:
+    logger.error(f"Failed to initialize telemetry file: {e}")
 
 # Alarm system state
 alarm_playing = False
@@ -101,7 +111,7 @@ def trigger_alarm():
 # ------------------
 # YOLO
 # ------------------
-model = YOLO("best.pt")
+model = YOLO("best2.pt")
 
 # ------------------
 # MediaPipe
@@ -135,17 +145,17 @@ baseline_x_angle = 0.0
 baseline_y_angle = 0.0
 
 closed_start = None
-phone_start_time = None
-last_phone_detection_time = None
+phone_accumulated_time = 0.0
 distracted_start_time = None
 driver_score = 100
 safe_start_time = None
 
 # YOLO Confidence and Tracking Parameters
-YOLO_CONF_BASE = 0.20      # Minimum confidence for YOLO inference
-YOLO_CONF_PHONE = 0.35     # Threshold for phone detection to avoid false positives
+YOLO_CONF_BASE = 0.2      # Minimum confidence for YOLO inference
+YOLO_CONF_PHONE_CONFIRMED = 0.5    # Threshold for phone detection to avoid false positives
 YOLO_CONF_SEATBELT = 0.25  # Threshold for seatbelt detection
-PHONE_GRACE_PERIOD = 0.8   # Time in seconds to tolerate transient detection misses
+PHONE_DECAY_RATE = 1.0     # Decay rate (seconds subtracted per second of no phone detection)
+PHONE_MAX_ACCUMULATION = 2.5 # Cap on accumulated phone detection time to ensure responsive recovery
 
 
 def distance(p1, p2):
@@ -168,12 +178,18 @@ with mp_face_mesh.FaceMesh(
     min_tracking_confidence=0.5
 ) as face_mesh:
 
+    last_frame_time = None
+
     while True:
 
         ret, frame = cap.read()
         frame = cv2.flip(frame, 1)
         if not ret:
             break
+
+        current_time = time.time()
+        dt = current_time - last_frame_time if last_frame_time is not None else 0.0
+        last_frame_time = current_time
 
         h, w, _ = frame.shape
 
@@ -215,19 +231,30 @@ with mp_face_mesh.FaceMesh(
                     label = model.names[cls]
                     conf = float(box.conf[0])
 
-                    if label == "Dist_mob" and conf >= YOLO_CONF_PHONE:
-                        phone_detected = True
+                    if label in ["Dist_mob", "smartphone"]:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(
-                            frame,
-                            f"Phone: {conf:.2f}",
-                            (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 0, 255),
-                            2
-                        )
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+                        is_conf = 1 if conf >= YOLO_CONF_PHONE_CONFIRMED else 0
+                        try:
+                            with open(telemetry_file, mode='a', newline='') as tf:
+                                writer = csv.writer(tf)
+                                writer.writerow([time.time(), conf, box_w, box_h, is_conf])
+                        except Exception as e:
+                            logger.error(f"Failed to write telemetry: {e}")
+
+                        if conf >= YOLO_CONF_PHONE_CONFIRMED:
+                            phone_detected = True
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            cv2.putText(
+                                frame,
+                                f"Phone: {conf:.2f}",
+                                (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6,
+                                (0, 0, 255),
+                                2
+                            )
                     elif label == "Set_belt" and conf >= YOLO_CONF_SEATBELT:
                         seatbelt_detected = True
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -243,26 +270,16 @@ with mp_face_mesh.FaceMesh(
                         )
 
             # ------------------
-            # Phone Detection Duration Tracking with Temporal Smoothing
+            # Phone Detection Duration Tracking with Decay/Persistence Mechanism
             # ------------------
-            current_time = time.time()
             if phone_detected:
-                last_phone_detection_time = current_time
-                if phone_start_time is None:
-                    phone_start_time = current_time
-                phone_duration = current_time - phone_start_time
-                if phone_duration > 2.0:
-                    phone_usage_alert = True
+                phone_accumulated_time = min(PHONE_MAX_ACCUMULATION, phone_accumulated_time + dt)
             else:
-                # To handle transient drops (e.g. motion blur, hand occluding camera momentarily),
-                # allow a grace period where we preserve the start time.
-                if last_phone_detection_time is not None and (current_time - last_phone_detection_time) <= PHONE_GRACE_PERIOD:
-                    phone_duration = current_time - phone_start_time
-                    if phone_duration > 2.0:
-                        phone_usage_alert = True
-                else:
-                    phone_start_time = None
-                    last_phone_detection_time = None
+                phone_accumulated_time = max(0.0, phone_accumulated_time - PHONE_DECAY_RATE * dt)
+
+            phone_duration = phone_accumulated_time
+            if phone_duration > 2.0:
+                phone_usage_alert = True
 
         # ------------------
         # FaceMesh
@@ -599,8 +616,8 @@ with mp_face_mesh.FaceMesh(
                 cv2.rectangle(frame, (bar_x1, bar_y1), (fill_x2, bar_y2), fill_color, -1)
         else:
             # Draw standard dashboard
-            if phone_detected:
-                phone_str = f"Yes ({phone_duration:.1f}s)"
+            if phone_duration > 0.0:
+                phone_str = f"Yes ({phone_duration:.1f}s)" if phone_detected else f"No ({phone_duration:.1f}s)"
             else:
                 phone_str = "No"
 

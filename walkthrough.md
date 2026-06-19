@@ -61,3 +61,13 @@ Implemented a translucent (glassmorphic) card at the bottom of the video frame d
    2026-06-13 01:05:00 - INFO - Open-eye calibration complete. Average EAR: 0.3120. Dynamic EYE_THRESHOLD set to 0.2184
    2026-06-13 01:05:03 - INFO - Head-pose calibration complete. Baseline X: -2.31, Baseline Y: 1.45
    ```
+
+## YOLO Model Class Name Update (`best2.pt`)
+
+To address the issue where the phone was not being detected after switching to `best2.pt`, we identified that the class label for the phone is named `"smartphone"` in `best2.pt` rather than `"Dist_mob"` (which was used in the previous model).
+
+### Changes:
+- Updated the YOLO detection logic in [integrated_dms.py](file:///d:/DAMTS_MediaPipe/integrated_dms.py#L234) to check if the detected class label is either `"Dist_mob"` or `"smartphone"`. This ensures compatibility with both standard custom-trained models and the new `best2.pt` model.
+
+### Verification:
+- Ran a verification test using `best2.pt` on the local `demo.mp4` file and verified that phone detections are successfully registered and processed under the updated `"smartphone"` label.

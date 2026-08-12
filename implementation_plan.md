@@ -1,52 +1,87 @@
-# Automatic Calibration Steps for DMS
+# Implementation Plan - DAMTS Vercel Deployment
 
-This plan details the addition of an automatic calibration phase at the startup of the Driver Monitoring System (DMS) before normal monitoring begins.
+Transition the local Python OpenCV Driver Alertness Monitoring & Tracking System (DAMTS) into a Vercel-ready, client-side web application. The web app will replicate the exact system logic, thresholds, visual HUD overlays, audio alerts, log files, and session video recordings entirely in the browser using MediaPipe and ONNX Runtime Web.
+
+---
 
 ## User Review Required
 
+Because local terminal commands are blocked by system-level write permissions in the agent environment, you must execute two preparation scripts locally to generate the web-friendly YOLOv8 assets:
+
+1. **Model Class Inspection**: Run `python inspect_model.py` to extract the class name map from `best2.pt`. This writes `model_info.json`.
+2. **ONNX Export**: Run `python export_onnx.py` to export the PyTorch weights `best2.pt` to `best2.onnx`.
+
 > [!IMPORTANT]
-> **Dynamic EAR Threshold Formula**: We propose setting the dynamic eye threshold as `EYE_THRESHOLD = clip(average_ear * 0.70, 0.15, 0.25)`. A value of `0.70` (70% of the driver's normal open-eye average EAR) is standard to prevent false positives while ensuring reliable drowsiness detection. The clipping bounds (`0.15` and `0.25`) act as fallbacks in case the user blinks heavily or is misaligned during calibration.
-> Please review and confirm if this formula aligns with your expectations.
+> The exported `best2.onnx` and `model_info.json` must remain in the project root directory. The web application will fetch them dynamically when loaded.
+
+---
 
 ## Proposed Changes
 
-### DMS Main Script
+We will create a pure, high-performance static web application in the root directory. This makes it instantly deployable to Vercel with zero build configuration.
 
-#### [MODIFY] [integrated_dms.py](file:///d:/DAMTS_MediaPipe/integrated_dms.py)
+### [NEW] Web Frontend Files
 
-- **Introduce Calibration States**:
-  - `STATE_CALIBRATING_EYES`: First phase (3 seconds) to capture average EAR.
-  - `STATE_CALIBRATING_POSE`: Second phase (3 seconds) to capture average X and Y head pose angles.
-  - `STATE_MONITORING`: The final active monitoring state.
+#### [NEW] [index.html](file:///d:/DAMTS_MediaPipe/index.html)
+- Provides the HTML5 semantic layout.
+- Integrates external CDNs:
+  - MediaPipe Tasks-Vision (`@mediapipe/tasks-vision`) for FaceMesh.
+  - ONNX Runtime Web (`ort.min.js`) for YOLOv8 inference.
+  - Chart.js for real-time telemetry plotting.
+  - Lucide Icons for premium visual UI indicators.
+- Hosts the video element, the overlay canvas, controls (Start, Pause, Stop/Save), the system logs panel, and the telemetry dashboard.
 
-- **Data Accumulation**:
-  - Store EAR and head-pose angles in lists during their respective calibration phases.
-  - Only capture data and decrement timers when a face is detected (`face_detected_this_frame` is `True`).
+#### [NEW] [styles.css](file:///d:/DAMTS_MediaPipe/styles.css)
+- Premium dark-theme CSS with glassmorphic panels (`backdrop-filter: blur`).
+- Custom animations, neon glow highlights (cyberpunk blue/cyan for normal states, red for alert states), and responsive layout grids.
 
-- **Dynamic Calibration Logic**:
-  - **Open-Eye Phase**: Calculate `avg_ear = sum(ear_samples) / len(ear_samples)` and set `EYE_THRESHOLD = clip(avg_ear * 0.70, 0.15, 0.25)`.
-  - **Head-Pose Phase**: Calculate `baseline_x = sum(x_samples) / len(x_samples)` and `baseline_y = sum(y_samples) / len(y_samples)`.
-  - **Runtime Normalization**: Adjust runtime angles as `adjusted_x = x_angle - baseline_x` and `adjusted_y = y_angle - baseline_y`. Apply threshold checks (`<-10` and `>10`) relative to these adjusted values.
+#### [NEW] [app.js](file:///d:/DAMTS_MediaPipe/app.js)
+Represents the core application controller:
+- **Camera Stream**: Manages `navigator.mediaDevices.getUserMedia` feed.
+- **MediaPipe FaceMesh**: Configures `FaceLandmarker` running locally in WebAssembly.
+- **YOLOv8 Inference**:
+  - Resizes input frame to `640x640`.
+  - Normalizes pixel values and transposes shape to planar `[1, 3, 640, 640]`.
+  - Performs inference using `onnxruntime-web`.
+  - Parses outputs `[1, 4 + C, 8400]`, runs Non-Maximum Suppression (NMS), and maps bounding boxes for `"Set_belt"` and `"smartphone"` / `"Dist_mob"`.
+- **Calibration Engine**: Replicates the 3-second eye calibration and 3-second head-pose calibration with identical mathematical thresholds.
+- **Decision Engine**: Monitors EAR, MAR, Head Pose angles, and phone presence to compute status (`SAFE`, `DROWSY`, `PHONE_USAGE`, `FATIGUED`, `DISTRACTED`) and safety score (starting at 100, dynamic deductions, and +1/5s recovery).
+- **Sound Alerts**: Synthesizes 2000Hz beeps using the Web Audio API (`OscillatorNode`).
+- **Telemetry & Logging**:
+  - Formats logs into a downloadable `dms_events.log`.
+  - Compiles telemetry confidence into a downloadable `phone_confidence_telemetry.csv` and updates a Chart.js real-time graph.
+- **Session Video Recording**: Leverages the `MediaRecorder` API to record the annotated `<canvas>` stream, creating a downloadable `demo.mp4` file upon session termination.
 
-- **Aesthetic On-Screen Calibration Overlay**:
-  - Overlay a semi-transparent card (glassmorphism look) for instructions using `cv2.addWeighted`.
-  - Show a countdown progress bar (neon blue/teal color) dynamically filling up based on time remaining.
-  - Display user-friendly status updates:
-    - `"CALIBRATION: PHASE 1/2 (EYES OPEN)"`
-    - `"CALIBRATION: PHASE 2/2 (DRIVING POSTURE)"`
-    - Status check indicators: `"Collecting data..."` or `"No face detected (Paused)"`.
+#### [NEW] [vercel.json](file:///d:/DAMTS_MediaPipe/vercel.json)
+- Configures custom headers for Vercel deployment:
+  - `Cross-Origin-Opener-Policy: same-origin`
+  - `Cross-Origin-Embedder-Policy: require-corp`
+- **Why?** These headers enable WebAssembly Multi-Threading via `SharedArrayBuffer` in modern browsers, speeding up YOLOv8 and FaceMesh inference by up to 10x.
+
+---
 
 ## Verification Plan
 
 ### Automated Tests
-- Since this is a live webcam app, automated unit tests aren't directly applicable for end-to-end flow. However, we will ensure that:
-  - The script compiles and starts without issues.
-  - Calibration state advances only when a face is present.
-  - Calculated baselines and dynamic thresholds are printed to logs upon transition.
+Since the application runs client-side in the browser, testing can be performed using local hosting.
 
 ### Manual Verification
-1. Start the script via `python integrated_dms.py`.
-2. Keep eyes open and look at the camera for Phase 1. Confirm that calibration timer decrements and dynamic EAR threshold is set.
-3. Keep natural driving posture for Phase 2. Confirm baseline pitch/yaw are captured.
-4. Move head left, right, and down to verify that detection relies on the relative/adjusted angles.
-5. Inspect `dms_events.log` to check calibration output.
+1. Run the inspection and export commands in your local shell:
+   ```bash
+   python inspect_model.py
+   python export_onnx.py
+   ```
+2. Start a local server in the project directory:
+   ```bash
+   # Option A: python
+   python -m http.server 8000
+   
+   # Option B: Node.js
+   npx serve .
+   ```
+3. Open `http://localhost:8000` in Google Chrome or Microsoft Edge.
+4. Verify:
+   - Camera access works.
+   - Calibration phases complete successfully.
+   - Drowsiness, fatigue, looking down/away, seatbelt compliance, and phone usage detections trigger matching overlays and audio alerts.
+   - Clicking "Stop & Save" generates downloads for `demo.mp4`, `dms_events.log`, and `phone_confidence_telemetry.csv`.

@@ -1,9 +1,22 @@
-# Tasks
+# DAMTS Vercel Migration Task List
 
-- [x] Define constants, state variables, and accumulators for the calibration steps
-- [x] Implement calibration state machine logic inside the main frame loop
-  - [x] Implement Phase 1: Open-Eye Calibration (3 seconds)
-  - [x] Implement Phase 2: Head-Pose Calibration (3 seconds)
-- [x] Update runtime eye drowsiness and head pose checks to use calibrated thresholds/baselines
-- [x] Add visual overlay styling for the calibration screens (instructions, feedback, countdown progress bar)
-- [x] Test and verify functionality
+- [ ] Export YOLO model and metadata
+  - [ ] User runs `python inspect_model.py` to create `model_info.json`
+  - [ ] User runs `python export_onnx.py` to create `best2.onnx`
+- [x] Create Vercel Configuration
+  - [x] Create `vercel.json` with Cross-Origin Isolation headers for WASM speedup
+- [x] Create UI Styling Sheet
+  - [x] Create `styles.css` with premium dark-glassmorphism panels and glowing indicators
+- [x] Create HTML Frontend Layout
+  - [x] Create `index.html` referencing CDNs for MediaPipe, ONNX Runtime, Chart.js, and Lucide Icons
+- [x] Create Frontend Core Application Script
+  - [x] Initialize camera stream and canvas renderer
+  - [x] Implement MediaPipe FaceMesh WASM resolver & landmark tracker
+  - [x] Implement ONNX Runtime YOLOv8 loader, image preprocessor, and NMS postprocessor
+  - [x] Replicate dynamic open-eye and head-pose calibration states
+  - [x] Replicate score calculation and deduction logic
+  - [x] Replicate 2000Hz browser-synth audio alerts
+  - [x] Implement CSV telemetry and TXT event log exporters
+  - [x] Implement client-side `MediaRecorder` canvas screen-recording (`demo.mp4`)
+- [ ] Verify functionality
+  - [ ] Verify local serving, webcam activation, calibration, alert triggers, downloads, and Vercel readiness

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DAMTS: Driver Alertness Monitoring & Tracking System</title>
+  <meta name="description" content="Vercel deployable Driver Alertness Monitoring System combining MediaPipe FaceMesh & Custom YOLOv8 inside the browser.">
+  <link rel="stylesheet" href="styles.css">
+  
+  <!-- CDNs for External Libraries -->
+  <!-- ONNX Runtime Web (SharedArrayBuffer multithreading supported) -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/ort.min.js"></script>
+  <!-- OpenCV.js for exact solvePnP Head Pose calculations -->
+  <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.6.0.1/dist/opencv.js"></script>
+  <!-- Chart.js for Telemetry -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header>
+    <div class="logo-container">
+      <div class="logo-icon">
+        <i data-lucide="eye" style="width: 28px; height: 28px;"></i>
+      </div>
+      <div>
+        <h1>DAMTS</h1>
+        <p style="font-size: 0.75rem; color: var(--text-secondary); font-weight: 500;">DRIVER ALERTNESS MONITORING SYSTEM</p>
+      </div>
+    </div>
+    <div class="status-badge-header" id="system-header-badge">
+      <div class="badge-dot" id="system-badge-dot"></div>
+      <span id="system-badge-text">SYSTEM STANDBY</span>
+    </div>
+  </header>
+
+  <!-- Main Grid Layout -->
+  <main>
+    <!-- Left Column: Video Feed & Primary Controls -->
+    <div class="primary-workspace">
+      
+      <!-- Live Video Feed with overlay drawing canvas -->
+      <div class="feed-container" id="video-feed-card">
+        <!-- Hidden source video -->
+        <video id="webcam-video" autoplay playsinline muted></video>
+        <!-- Overlay rendering canvas -->
+        <canvas id="output-canvas"></canvas>
+        
+        <!-- Loading Overlay Screen -->
+        <div class="loading-overlay" id="loading-screen">
+          <div class="spinner"></div>
+          <div class="loading-text" id="loading-status">Initializing System Engines...</div>
+          <div class="loading-subtext" id="loading-substatus">
+            Loading MediaPipe FaceMesh and ONNX Runtime Web modules. This may take a few seconds.
+          </div>
+        </div>
+      </div>
+
+      <!-- Control actions -->
+      <div class="control-bar">
+        <div class="btn-group">
+          <button id="btn-start" class="btn-primary" disabled>
+            <i data-lucide="play" style="width: 18px; height: 18px;"></i> Start Session
+          </button>
+          <button id="btn-pause" class="btn-secondary" disabled>
+            <i data-lucide="pause" style="width: 18px; height: 18px;"></i> Pause
+          </button>
+          <button id="btn-stop" class="btn-danger" disabled>
+            <i data-lucide="square" style="width: 18px; height: 18px;"></i> Stop & Save Session
+          </button>
+        </div>
+        
+        <div class="btn-group">
+          <button id="btn-mute" class="btn-secondary">
+            <i data-lucide="volume-2" id="mute-icon" style="width: 18px; height: 18px;"></i>
+            <span id="mute-text">Alerts: ON</span>
+          </button>
+        </div>
+
+        <div class="recording-indicator" id="rec-indicator" style="display: none;">
+          <div class="recording-dot"></div>
+          <span>RECORDING SESSION</span>
+        </div>
+      </div>
+      
+      <!-- System Event Logs -->
+      <div class="glass-card">
+        <div class="card-title" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <i data-lucide="terminal" style="width: 20px; height: 20px;"></i>
+            <span>System Event Logs (dms_events.log)</span>
+          </div>
+          <button id="btn-download-logs" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;" disabled>
+            <i data-lucide="download" style="width: 14px; height: 14px;"></i> Download Log File
+          </button>
+        </div>
+        <div class="log-terminal" id="log-console">
+          <div class="log-entry log-info">[SYSTEM] Initializing DAMTS dashboard...</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right Column: System Panels -->
+    <div class="side-panel">
+      
+      <!-- Prerequisites/Setup Reminder -->
+      <div class="glass-card setup-guide-card" id="setup-guide">
+        <div class="card-title">
+          <i data-lucide="settings" style="width: 20px; height: 20px;"></i>
+          <span>Setup Instructions</span>
+        </div>
+        <div class="step-list">
+          <div class="step-item">
+            <div class="step-number">1</div>
+            <div class="step-content">
+              Run <code>python inspect_model.py</code> in your workspace root to generate the model mapping metadata (<strong>model_info.json</strong>).
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-number">2</div>
+            <div class="step-content">
+              Run <code>python export_onnx.py</code> in your workspace root to export PyTorch weights to <strong>best2.onnx</strong>.
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-number">3</div>
+            <div class="step-content">
+              Place both <strong>best2.onnx</strong> and <strong>model_info.json</strong> in the project folder, then click <strong>Start Session</strong>.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Parameters Dashboard (HUD Panel) -->
+      <div class="glass-card">
+        <div class="card-title">
+          <i data-lucide="activity" style="width: 20px; height: 20px;"></i>
+          <span>Driver Status HUD</span>
+        </div>
+        
+        <div class="score-container">
+          <div class="score-meta">
+            <span class="telemetry-label" style="font-size: 0.85rem;">DRIVER SAFETY SCORE</span>
+            <span class="score-text" id="hud-score">100</span>
+          </div>
+          <div class="score-bar-bg">
+            <div class="score-bar-fill" id="hud-score-bar" style="width: 100%; background-color: var(--accent-green);"></div>
+          </div>
+        </div>
+
+        <div class="telemetry-list" style="margin-top: 0.5rem;">
+          <div class="telemetry-row">
+            <span class="telemetry-label">SYSTEM STATE:</span>
+            <span class="telemetry-value value-safe" id="hud-state">STANDBY</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">EYE ASPECT RATIO (EAR):</span>
+            <span class="telemetry-value value-normal" id="hud-ear">0.00</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">MOUTH ASPECT RATIO (MAR):</span>
+            <span class="telemetry-value value-normal" id="hud-mar">0.00</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">HEAD POSE:</span>
+            <span class="telemetry-value value-normal" id="hud-pose">Forward</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">PHONE DETECTED:</span>
+            <span class="telemetry-value value-normal" id="hud-phone">No</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">SEATBELT COMPLIANCE:</span>
+            <span class="telemetry-value value-danger" id="hud-seatbelt">Not Detected</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry Chart -->
+      <div class="glass-card">
+        <div class="card-title" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <i data-lucide="line-chart" style="width: 20px; height: 20px;"></i>
+            <span>Phone Confidence Telemetry</span>
+          </div>
+          <button id="btn-download-telemetry" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;" disabled>
+            <i data-lucide="download" style="width: 14px; height: 14px;"></i> CSV
+          </button>
+        </div>
+        <div class="chart-container">
+          <canvas id="telemetry-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <p>DAMTS: Driver Alertness Monitoring & Tracking System &copy; 2026. Built with MediaPipe & ONNX Runtime Web. Ready for Vercel Deployment.</p>
+  </footer>
+
+  <!-- Main script loader (Module structure to enable ES6 Imports) -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
